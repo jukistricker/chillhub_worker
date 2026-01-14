@@ -8,16 +8,21 @@ import (
 	"chillhub/internal/shared/middleware"
 	minioshared "chillhub/internal/shared/minio"
 	mongoshared "chillhub/internal/shared/mongo"
+	"fmt"
 	"log" // Thêm thư viện log
 	"os"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	// 1. Load cấu hình
+	_ = godotenv.Load() // local only
+
 	cfg := config.Load()
+
+	fmt.Println(cfg.Port)
 	log.Println("Cấu hình đã được tải thành công...")
 
 
