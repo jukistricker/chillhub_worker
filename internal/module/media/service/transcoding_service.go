@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -152,9 +153,17 @@ func (t *TranscodingService) Process(media *model.Media) {
         outputPath,
     )
 
-    
+    var cmd *exec.Cmd
 
-    cmd := exec.Command("nice", append([]string{"-n", "19", "ffmpeg"}, args...)...)
+    if runtime.GOOS == "linux" {
+        cmd = exec.Command(
+            "nice",
+            append([]string{"-n", "19", "ffmpeg"}, args...)...,
+        )
+    } else {
+        // Windows / Mac
+        cmd = exec.Command("ffmpeg", args...)
+    }
     
     log.Printf("[transcode] executing: %v", cmd.Args)
     
