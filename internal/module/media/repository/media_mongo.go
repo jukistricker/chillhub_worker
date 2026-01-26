@@ -3,14 +3,11 @@ package repository
 import (
 	"context"
 	"time"
-
 	"chillhub/internal/module/media/model"
-
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
-
-	appErr "chillhub/internal/shared/error"
+	"chillhub/internal/shared/catalog"
 )
 
 type MediaRepository interface {
@@ -25,42 +22,37 @@ type mongoRepo struct {
 
 // UpdateStatus: Hiện thực hóa logic để cập nhật trạng thái video
 func (r *mongoRepo) UpdateStatus(ctx context.Context, id string, status model.MediaStatus) error {
-    objID, err := primitive.ObjectIDFromHex(id)
-    if err != nil {
-        return appErr.ErrBadRequest.WithErr(err, "media.invalid_id")
-    }
+	objID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return catalog.BadRequest.Err(err, "media.invalid_id")
+	}
 
-    // Thực hiện Update trong MongoDB
-    _, err = r.col.UpdateOne(
-        ctx,
-        bson.M{"_id": objID},
-        bson.M{
-            "$set": bson.M{
-                "status":     status,
-                "updated_at": time.Now().Unix(),
-            },
-        },
-    )
+	// Thực hiện Update trong MongoDB
+	_, err = r.col.UpdateOne(
+		ctx,
+		bson.M{"_id": objID},
+		bson.M{
+			"$set": bson.M{
+				"status":     status,
+				"updated_at": time.Now().Unix(),
+			},
+		},
+	)
 
-    if err != nil {
-        return appErr.ErrInternal.WithErr(err)
-    }
-
-    return nil
+	return nil
 }
-
 
 // Cài đặt FindByID cho struct mongoRepo (KHÔNG dùng MediaRepository làm receiver)
 func (r *mongoRepo) FindByID(ctx context.Context, objID primitive.ObjectID) (*model.Media, error) {
-    var m model.Media
-    err := r.col.FindOne(ctx, bson.M{"_id": objID}).Decode(&m)
-    if err != nil {
-        return nil, appErr.ErrNotFound.WithErr(
+	var m model.Media
+	err := r.col.FindOne(ctx, bson.M{"_id": objID}).Decode(&m)
+	if err != nil {
+		return nil, catalog.NotFound.Err(
 			err,
 			"media.not_found",
 		)
-    }
-    return &m, nil
+	}
+	return &m, nil
 }
 
 func NewMediaMongo(db *mongo.Database) MediaRepository {
