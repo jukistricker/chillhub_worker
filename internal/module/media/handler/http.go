@@ -2,12 +2,10 @@ package handler
 
 import (
 	"chillhub/internal/module/media/service"
+	"chillhub/internal/shared/catalog"
 	"chillhub/internal/shared/response"
 	"log"
 	"net/http"
-
-	appErr "chillhub/internal/shared/error"
-
 	"github.com/gin-gonic/gin"
 	"github.com/minio/minio-go/v7"
 )
@@ -43,7 +41,7 @@ func (h *MediaHandler) InitUpload(c *gin.Context) {
 	}(), url != "", err)
 	if err != nil {
 		log.Printf("InitUpload: error calling service.InitUpload: %v", err)
-		c.Error(err) //  giao toàn quyền cho global handler
+		catalog.Internal.Fail(c,err,"media.init_upload_failed")
 		return
 	}
 
@@ -68,7 +66,7 @@ func (h *MediaHandler) CompleteUpload(c *gin.Context) {
 	var input completeInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		log.Printf("CompleteUpload: invalid JSON input: %v", err)
-		c.Error(appErr.ErrBadRequest.WithErr(err, "media.invalid_complete_data"))
+		catalog.BadRequest.Err(err, "media.invalid_complete_data")
 		return
 	}
 	log.Printf("CompleteUpload: bound input UploadID=%s parts=%d", input.UploadID, len(input.Parts))
@@ -155,7 +153,7 @@ func (h *MediaHandler) InitLargeUpload(c *gin.Context) {
 	// 2. Bind JSON và kiểm tra lỗi validate
 	if err := c.ShouldBindJSON(&input); err != nil {
 		log.Printf("InitLargeUpload: invalid input JSON: %v", err)
-		c.Error(appErr.ErrBadRequest.WithErr(err, "media.invalid_input"))
+		catalog.BadRequest.Err(err,"media.invalid_input")
 		return
 	}
 	log.Printf("InitLargeUpload: received fileSize=%d", input.FileSize)

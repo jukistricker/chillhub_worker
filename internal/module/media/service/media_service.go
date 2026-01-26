@@ -10,12 +10,11 @@ import (
 
 	"chillhub/internal/module/media/model"
 	"chillhub/internal/module/media/repository"
+	"chillhub/internal/shared/catalog"
 	minioshared "chillhub/internal/shared/minio"
 
 	"github.com/minio/minio-go/v7"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-
-	appErr "chillhub/internal/shared/error"
 )
 
 var mediaFolder = os.Getenv("MEDIA_FOLDER")
@@ -151,6 +150,9 @@ func (s *MediaService) CompleteUpload(ctx context.Context, id string, uploadID s
 	}
 	log.Printf("CompleteUpload: media status updated to %s", model.StatusPending)
 
+	// TỐI ƯU: Đợi một chút để MinIO ổn định file (nhất là với file GB)
+    time.Sleep(2 * time.Second)
+	
 	// 4. Kích hoạt Transcode chạy ngầm
 	// Lúc này Transcoder download file sẽ không còn lỗi "Key does not exist" nữa
 	log.Printf("CompleteUpload: starting transcoder for mediaID=%s", media.ID.Hex())
@@ -189,7 +191,7 @@ func (s *MediaService) GetByID(ctx context.Context, id string) (*model.Media, er
 	objID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
 		log.Printf("GetByID: ObjectIDFromHex error: %v", err)
-		return nil, appErr.ErrBadRequest.WithErr(err)
+		return nil, catalog.BadRequest.Err(err, "media.invalid_id")
 	}
 	log.Printf("GetByID: parsed objectID=%s", objID.Hex())
 
