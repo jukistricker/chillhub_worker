@@ -5,15 +5,12 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
-
-	appErr "chillhub/internal/shared/error"
-
+	"chillhub/internal/shared/catalog"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -34,10 +31,8 @@ func (u *Util) Upload(
 
 	src, err := file.Open()
 	if err != nil {
-		return nil, appErr.New(
-			http.StatusInternalServerError,
-			"file.open.failed",
-		)
+		return nil, 
+		catalog.Internal.Err(err, "minio.file.open_failed")
 	}
 	defer src.Close()
 
@@ -54,10 +49,7 @@ func (u *Util) Upload(
 		},
 	)
 	if err != nil {
-		return nil, appErr.ErrInternal.WithErr(
-			err,
-			"minio.upload.failed",
-		)
+		return nil, catalog.Internal.Err(err, "minio.upload_failed")
 	}
 
 	return &ObjectInfo{
@@ -80,7 +72,7 @@ func (u *Util) Delete(
 		minio.RemoveObjectOptions{},
 	)
 	if err != nil {
-		return appErr.ErrInternal.WithErr(
+		return catalog.Internal.Err(
 			err,
 			"minio.delete.failed",
 		)
@@ -104,10 +96,8 @@ func (u *Util) PresignGet(
 		nil,
 	)
 	if err != nil {
-		return "", appErr.ErrInternal.WithErr(
-			err,
-			"minio.presign.get.failed",
-		)
+		return "", 
+		catalog.Internal.Err(err,"minio.presign_get_failed")
 	}
 
 	return url.String(), nil
@@ -128,16 +118,13 @@ func (u *Util) PresignPut(
 		expiry,
 	)
 	if err != nil {
-		print("error: ",err)
-		return "", appErr.ErrInternal.WithErr(
-			err,
-			"minio.presign.put.failed",
-		)
+		print("error: ", err)
+		return "", 
+		catalog.Internal.Err(err, "minio.presign_put_failed")
 	}
 
 	return url.String(), nil
 }
-
 
 func (u *Util) EnsureBucket(
 	ctx context.Context,
@@ -146,7 +133,7 @@ func (u *Util) EnsureBucket(
 
 	exists, err := u.storage.cli.BucketExists(ctx, bucket)
 	if err != nil {
-		return appErr.ErrInternal.WithErr(err, "minio.bucket.check.failed")
+		return catalog.Internal.Err(err, "minio.bucket.check.failed")
 	}
 
 	if exists {
@@ -156,27 +143,25 @@ func (u *Util) EnsureBucket(
 	return nil
 }
 
-
 func (u *Util) GetObject(ctx context.Context, bucket, object string) (io.ReadCloser, int64, string, error) {
-    obj, err := u.storage.cli.GetObject(ctx, bucket, object, minio.GetObjectOptions{})
-    if err != nil {
-        return nil, 0, "", appErr.ErrNotFound.WithErr(
+	obj, err := u.storage.cli.GetObject(ctx, bucket, object, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, 0, "", catalog.NotFound.Err(
 			err,
 			"minio.object.not_found",
 		)
-    }
+	}
 
-    info, err := obj.Stat()
-    if err != nil {
-        return nil, 0, "", appErr.ErrInternal.WithErr(
+	info, err := obj.Stat()
+	if err != nil {
+		return nil, 0, "", catalog.Internal.Err(
 			err,
 			"minio.object.stat_failed",
 		)
-    }
+	}
 
-    return obj, info.Size, info.ContentType, nil
+	return obj, info.Size, info.ContentType, nil
 }
-
 
 // UploadFolder tải tất cả file trong folderPath lên MinIO dưới prefix
 func (u *Util) UploadFolder(ctx context.Context, bucket, prefix, folderPath string, excludeFiles ...string) error {
@@ -222,13 +207,11 @@ func (u *Util) UploadFolder(ctx context.Context, bucket, prefix, folderPath stri
 	return nil
 }
 
-
 // FGetObject tải một object từ MinIO về file local
 func (u *Util) FGetObject(ctx context.Context, bucket, object, filePath string) error {
-    // Gọi trực tiếp từ minio-go client
-    return u.storage.cli.FGetObject(ctx, bucket, object, filePath, minio.GetObjectOptions{})
+	// Gọi trực tiếp từ minio-go client
+	return u.storage.cli.FGetObject(ctx, bucket, object, filePath, minio.GetObjectOptions{})
 }
-
 
 // Khởi tạo một phiên upload mới, trả về UploadID
 func (u *Util) NewMultipartUpload(ctx context.Context, bucket, object string) (string, error) {

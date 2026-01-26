@@ -4,52 +4,60 @@ import (
 	"errors"
 	"net/http"
 
-	"chillhub/internal/shared/error"
-	"chillhub/internal/shared/response"
-
 	"github.com/gin-gonic/gin"
+
+	"chillhub/internal/shared/catalog"
+	appErr "chillhub/internal/shared/errors"
+	"chillhub/internal/shared/response"
 )
 
 func ErrorHandler(debug bool) gin.HandlerFunc {
-    return func(c *gin.Context) {
-        c.Next()
+	return func(c *gin.Context) {
+		c.Next()
 
-        if len(c.Errors) == 0 {
-            return
-        }
+		if len(c.Errors) == 0 {
+			return
+		}
 
-        err := c.Errors.Last().Err
-        var appErr *error.AppError
+		err := c.Errors.Last().Err
 
-        status := http.StatusInternalServerError
-        message := "internal.server_error"
-        var trace string
+		// AppError -> chuẩn catalog
+		var ae *appErr.AppError
+		if errors.As(err, &ae) {
+			var data any
 
-        if errors.As(err, &appErr) {
-            // Lỗi nghiệp vụ
-            status = appErr.Status
-            message = appErr.Message
-            if debug && appErr.Err != nil {
-                trace = appErr.Err.Error()
-            }
-        } else {
-            // Lỗi hệ thống không xác định
-            if debug {
-                trace = err.Error()
-            }
-        }
+			if debug && ae.Err != nil {
+				data = ae.Err.Error()
+			} else {
+				data = nil
+			}
 
-        // Tạo ErrorBody gọn nhẹ
-        var errBody *response.ErrorBody
-        if trace != "" {
-            errBody = &response.ErrorBody{Trace: trace}
-        }
+			response.Send(
+				c,
+				ae.Status,
+				ae.Message,
+				data,
+			)
 
-        c.AbortWithStatusJSON(status, response.Envelope{
-            Success: false,
-            Status:  status,
-            Message: message,
-            Error:   errBody,
-        })
-    }
+			c.Abort()
+			return
+		}
+
+		// Unknown error -> Internal
+		var data any
+		if debug {
+			data = err.Error()
+		} else {
+			data = nil
+		}
+
+		response.Send(
+			c,
+			http.StatusInternalServerError,
+			catalog.Internal.Message,
+			data,
+		)
+
+		c.Abort()
+	}
 }

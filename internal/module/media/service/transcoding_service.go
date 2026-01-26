@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 type TranscodingService struct {
@@ -39,27 +40,29 @@ var priorityEncoders = []struct {
 }
 
 func (t *TranscodingService) getBestVideoCodec() string {
-	// Lấy danh sách encoders mà FFmpeg hiện tại hỗ trợ
-	out, err := exec.Command("ffmpeg", "-encoders").Output()
-	if err != nil {
-		log.Printf("[transcode] warn: could not list encoders, fallback to libx264")
-		return "libx264"
-	}
+    // 1. Kiểm tra xem FFmpeg có tồn tại không
+    out, err := exec.Command("ffmpeg", "-encoders").Output()
+    if err != nil {
+        log.Printf("[transcode] warn: ffmpeg not found, fallback to libx264")
+        return "libx264"
+    }
 
-	supported := string(out)
-	for _, enc := range priorityEncoders {
-		if strings.Contains(supported, enc.flag) {
-			// Thử chạy một lệnh test siêu ngắn để chắc chắn driver hoạt động
-			testCmd := exec.Command("ffmpeg", "-f", "lavfi", "-i", "color=c=black:s=64x64", "-frames:v", "1", "-vcodec", enc.flag, "-f", "null", "-")
-			if err := testCmd.Run(); err == nil {
-				log.Printf("[transcode] hardware accelerator detected: %s", enc.name)
-				return enc.flag
-			}
-		}
-	}
+    supported := string(out)
+    for _, enc := range priorityEncoders {
+        if strings.Contains(supported, enc.flag) {
+            // 2. Lệnh test siêu nhẹ, tương thích cả Windows & Linux
+            // Thêm -pix_fmt yuv420p vì một số bản build GPU yêu cầu định dạng này
+            testCmd := exec.Command("ffmpeg", "-hide_banner", "-f", "lavfi", "-i", "color=c=black:s=320x240", "-frames:v", "1", "-c:v", enc.flag, "-pix_fmt", "yuv420p", "-f", "null", "-")
+            
+            if err := testCmd.Run(); err == nil {
+                log.Printf("[transcode] hardware accelerator verified: %s (%s)", enc.name, enc.flag)
+                return enc.flag
+            }
+        }
+    }
 
-	log.Printf("[transcode] no hardware acceleration found, using CPU (libx264)")
-	return "libx264"
+    log.Printf("[transcode] no working hardware acceleration, using CPU (libx264)")
+    return "libx264"
 }
 
 
@@ -110,8 +113,19 @@ func (t *TranscodingService) Process(media *model.Media) {
 
     // 3. Download file gốc từ MinIO về máy local
     log.Printf("[transcode] downloading from bucket=%s object=%s to %s", media.Raw.Bucket, media.Raw.Object, inputPath)
-    if err := t.minio.FGetObject(ctx, media.Raw.Bucket, media.Raw.Object, inputPath); err != nil {
-        log.Printf("[transcode] download failed for mediaID=%s: %v", mediaID, err)
+    maxRetries := 3
+    var downloadErr error
+    for i := 0; i < maxRetries; i++ {
+        downloadErr = t.minio.FGetObject(ctx, media.Raw.Bucket, media.Raw.Object, inputPath)
+        if downloadErr == nil {
+            break
+        }
+        log.Printf("[transcode] download attempt %d failed: %v. Retrying...", i+1, downloadErr)
+        time.Sleep(5 * time.Second) // Nghỉ một chút trước khi thử lại
+    }
+
+    if downloadErr != nil {
+        log.Printf("[transcode] download failed after %d attempts: %v", maxRetries, downloadErr)
         _ = t.repo.UpdateStatus(ctx, mediaID, model.StatusFailed)
         return
     }
@@ -122,31 +136,42 @@ func (t *TranscodingService) Process(media *model.Media) {
     codec := t.getBestVideoCodec()
 
     // Khởi tạo tham số cơ bản
-    args := []string{
-        "-err_detect", "ignore_err", // Bỏ qua các lỗi nhỏ trong stream
-        "-i", inputPath,
-        "-fflags", "+genpts+discardcorrupt", // Tạo lại timestamp và bỏ qua khung hình hỏng
+    // Khởi tạo args
+    var args []string
+
+    // TỐI ƯU GIẢI MÃ (Decoding): Chỉ áp dụng cho NVIDIA để đạt tốc độ cao nhất
+    if codec == "h264_nvenc" {
+        args = append(args, "-hwaccel", "cuda", "-hwaccel_output_format", "cuda")
     }
 
-    // Cấu hình đặc thù cho từng loại Codec
+    // Tham số Input
+    args = append(args, "-err_detect", "ignore_err", "-i", inputPath, "-fflags", "+genpts+discardcorrupt")
+
+    // Cấu hình Encoding dựa trên Codec
     switch codec {
     case "h264_nvenc":
-        args = append(args, "-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq")
+        args = append(args, 
+            "-c:v", "h264_nvenc", 
+            "-preset", "p4",    // RTX 3050 hỗ trợ từ p1 (nhanh) đến p7 (đẹp)
+            "-tune", "hq", 
+            "-rc", "vbr",       // Variable Bitrate
+            "-cq", "24",        // Chất lượng ổn định
+            "-b:v", "5M",       // Giới hạn băng thông để tránh file quá nặng trên GPU
+            "-maxrate", "8M",
+            "-bufsize", "8M",
+        )
     case "h264_qsv":
-        args = append(args, "-c:v", "h264_qsv", "-preset", "fast")
+        args = append(args, "-c:v", "h264_qsv", "-preset", "fast", "-look_ahead", "0")
     case "h264_amf":
         args = append(args, "-c:v", "h264_amf", "-quality", "speed")
-    default: // libx264 (CPU)
+    default: // CPU (libx264)
         args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-threads", "2")
     }
 
-    // Các tham số HLS và Audio chung
+    // Tham số Output (HLS & Audio)
     args = append(args, 
-        "-c:a", "aac", 
-        "-ac", "2",           // Ép về 2 kênh (Stereo) để sửa lỗi "9 channels"
-        "-b:a", "128k",
-        "-ar", "44100",       // Chuẩn hóa Sample Rate
-        "-af", "aresample=async=1", // Đồng bộ lại audio nếu có gói tin bị mất
+        "-c:a", "aac", "-ac", "2", "-b:a", "128k", "-ar", "44100",
+        "-af", "aresample=async=1",
         "-hls_time", "6",
         "-hls_playlist_type", "vod",
         "-hls_segment_filename", filepath.Join(workDir, mediaID+"_%03d.ts"),
@@ -154,14 +179,9 @@ func (t *TranscodingService) Process(media *model.Media) {
     )
 
     var cmd *exec.Cmd
-
     if runtime.GOOS == "linux" {
-        cmd = exec.Command(
-            "nice",
-            append([]string{"-n", "19", "ffmpeg"}, args...)...,
-        )
+        cmd = exec.Command("nice", append([]string{"-n", "19", "ffmpeg"}, args...)...)
     } else {
-        // Windows / Mac
         cmd = exec.Command("ffmpeg", args...)
     }
     
@@ -203,5 +223,12 @@ func (t *TranscodingService) Process(media *model.Media) {
         log.Printf("[transcode] warn: UpdateStatus -> Ready failed for mediaID=%s: %v", mediaID, err)
     } else {
         log.Printf("[transcode] processing finished successfully mediaID=%s", mediaID)
+    }
+
+    log.Printf("[transcode] cleaning up raw file: bucket=%s object=%s", media.Raw.Bucket, media.Raw.Object)
+    if err := t.minio.Delete(ctx, media.Raw.Bucket, media.Raw.Object); err != nil {
+        log.Printf("[transcode] warn: failed to delete raw file %s: %v", media.Raw.Object, err)
+    } else {
+        log.Printf("[transcode] raw file deleted successfully")
     }
 }
